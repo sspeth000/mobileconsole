@@ -17,11 +17,11 @@
     :host { all: initial; color-scheme: dark; }
     * { box-sizing: border-box; }
     .mc-panel {
-      position: fixed; z-index: 2147483647; top: 8px; left: 3vw;
-      width: 94vw; height: min(78vh, 680px); min-height: 280px;
+      position: fixed; z-index: 2147483647; top: 0; right: 0; left: auto;
+      width: min(480px, 94vw); height: 100vh; height: 100dvh; min-height: 280px;
       display: flex; flex-direction: column; overflow: hidden;
       background: #17191f; color: #e7eaf0; border: 1px solid #454b57;
-      border-radius: 12px; box-shadow: 0 12px 42px #0009;
+      border-radius: 12px 0 0 12px; box-shadow: -12px 0 42px #0009;
       font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
       touch-action: none;
     }
@@ -40,15 +40,25 @@
     .mc-input { border-top:1px solid #3b414c; padding:8px; display:flex; gap:6px; }
     .mc-input textarea { flex:1; min-width:0; min-height:58px; resize:vertical; color:#e7eaf0; background:#101216; border:1px solid #454b57; border-radius:6px; padding:8px; outline:none; }
     .mc-sources { display:flex; flex:1; min-height:0; }
-    .mc-files { width:40%; max-width:190px; overflow:auto; border-right:1px solid #3b414c; touch-action:pan-y; }
-    .mc-file { display:block; width:100%; text-align:left; border:0; border-radius:0; border-bottom:1px solid #2d323b; background:transparent; overflow-wrap:anywhere; }
-    .mc-file.selected { background:#34445f; }
+    .mc-files { width:42%; max-width:210px; min-width:118px; overflow:auto; border-right:1px solid #3b414c; padding:5px 0; touch-action:pan-y; }
+    .mc-tree-group { width:100%; }
+    .mc-tree-parent, .mc-tree-child { display:flex; align-items:center; gap:6px; width:100%; text-align:left; border:0; border-radius:0; background:transparent; padding:6px 8px; min-height:30px; overflow-wrap:anywhere; }
+    .mc-tree-parent { color:#dce5f5; font-weight:700; }
+    .mc-tree-parent:hover, .mc-tree-child:hover { background:#292f3a; }
+    .mc-tree-child { padding-left:22px; color:#c2cad7; font-weight:400; }
+    .mc-tree-child.selected { background:#34445f; color:#fff; }
+    .mc-tree-arrow { width:12px; flex:none; color:#9aa8bc; }
+    .mc-tree-icon { width:15px; flex:none; }
+    .mc-tree-label { min-width:0; overflow-wrap:anywhere; }
+    .mc-tree-nested { padding-left:10px; }
+    .mc-tree-folder { color:#aebbd0; }
     .mc-source-view { flex:1; min-width:0; overflow:auto; padding:8px; touch-action:pan-y; }
     pre { margin:0; white-space:pre; font:12px/1.5 ui-monospace,monospace; }
     .mc-muted { color:#aab2c0; padding:10px; }
     .mc-hidden { display:none !important; }
     .mc-reopen { position:fixed; z-index:2147483647; right:12px; bottom:18px; border-radius:22px; background:#26364f; border:1px solid #7198d2; padding:10px 14px; box-shadow:0 4px 16px #0008; }
-    @media (min-width:700px) { .mc-panel { width: min(720px, 92vw); left: max(4vw, calc((100vw - 720px)/2)); } }
+    @media (min-width:700px) { .mc-panel { width: min(520px, 42vw); } }
+    @media (max-width:420px) { .mc-panel { width:100vw; border-radius:0; } .mc-files { width:40%; min-width:112px; } }
   `;
   shadow.append(style);
 
@@ -133,35 +143,130 @@
     if (activeTab === 'sources' && !filesBox.dataset.loaded) loadSources();
   });
 
-  async function loadSources() {
+  function loadSources() {
     filesBox.dataset.loaded = '1';
     filesBox.replaceChildren();
-    const entries = [];
-    document.querySelectorAll('script').forEach((el, i) => entries.push({
-      label: el.src || '[inline script ' + (i + 1) + ']',
-      kind: 'JavaScript',
-      url: el.src,
-      text: el.src ? null : el.textContent
+    const groups = { Scripts: [], Styles: [] };
+    document.querySelectorAll('script').forEach((el, i) => groups.Scripts.push({
+      label: el.src ? (new URL(el.src, location.href)).pathname.split('/').pop() || el.src : '[inline script ' + (i + 1) + ']',
+      fullLabel: el.src || '[inline script ' + (i + 1) + ']',
+      kind: 'JavaScript', url: el.src || null, text: el.src ? null : el.textContent
     }));
-    document.querySelectorAll('link[rel~="stylesheet"], style').forEach((el, i) => entries.push({
-      label: el.href || '[inline style ' + (i + 1) + ']',
-      kind: 'CSS',
-      url: el.href || null,
-      text: el.href ? null : el.textContent
+    document.querySelectorAll('link[rel~="stylesheet"], style').forEach((el, i) => groups.Styles.push({
+      label: el.href ? (new URL(el.href, location.href)).pathname.split('/').pop() || el.href : '[inline style ' + (i + 1) + ']',
+      fullLabel: el.href || '[inline style ' + (i + 1) + ']',
+      kind: 'CSS', url: el.href || null, text: el.href ? null : el.textContent
     }));
-    if (!entries.length) filesBox.innerHTML = '<div class="mc-muted">No script or stylesheet elements found.</div>';
-    entries.forEach((entry, i) => {
+
+    const root = document.createElement('div');
+    root.className = 'mc-tree-group';
+    const page = document.createElement('div');
+    page.className = 'mc-muted';
+    page.textContent = location.host || 'Current page';
+    root.append(page);
+
+    function makeFile(entry) {
       const b = document.createElement('button');
-      b.className = 'mc-file';
-      b.textContent = (entry.kind === 'CSS' ? '🎨 ' : 'JS ') + entry.label;
+      b.className = 'mc-tree-child';
+      b.title = entry.fullLabel;
+      const ico = document.createElement('span');
+      ico.className = 'mc-tree-icon';
+      ico.textContent = entry.kind === 'CSS' ? '◇' : 'JS';
+      const label = document.createElement('span');
+      label.className = 'mc-tree-label';
+      label.textContent = entry.label;
+      b.append(ico, label);
       b.addEventListener('click', () => showSource(entry, b));
-      filesBox.append(b);
-      if (i === 0) showSource(entry, b);
+      return b;
+    }
+    Object.entries(groups).forEach(([groupName, entries]) => {
+      const group = document.createElement('section');
+      group.className = 'mc-tree-group';
+      const parent = document.createElement('button');
+      parent.className = 'mc-tree-parent';
+      const arrow = document.createElement('span');
+      arrow.className = 'mc-tree-arrow';
+      arrow.textContent = entries.length ? '▾' : '▸';
+      const icon = document.createElement('span');
+      icon.className = 'mc-tree-icon';
+      icon.textContent = groupName === 'Scripts' ? '▣' : '▤';
+      const label = document.createElement('span');
+      label.className = 'mc-tree-label';
+      label.textContent = groupName + ' (' + entries.length + ')';
+      parent.append(arrow, icon, label);
+      const children = document.createElement('div');
+      children.className = 'mc-tree-nested';
+      parent.addEventListener('click', () => {
+        const open = children.classList.toggle('mc-hidden') === false;
+        arrow.textContent = open ? '▾' : '▸';
+      });
+
+      const folderTree = new Map();
+      entries.forEach(entry => {
+        let segments = [];
+        if (entry.url) {
+          try { segments = new URL(entry.url, location.href).pathname.split('/').filter(Boolean).slice(0, -1); } catch (_) {}
+        }
+        let current = folderTree;
+        segments.forEach(segment => {
+          if (!current.has(segment)) current.set(segment, new Map());
+          current = current.get(segment);
+        });
+        if (!current.has('__files__')) current.set('__files__', []);
+        current.get('__files__').push(entry);
+      });
+      function renderTree(map, target) {
+        for (const [name, value] of map) {
+          if (name === '__files__') {
+            value.forEach(entry => target.append(makeFile(entry)));
+            continue;
+          }
+          const folder = document.createElement('div');
+          const folderButton = document.createElement('button');
+          folderButton.className = 'mc-tree-child mc-tree-folder';
+          const folderArrow = document.createElement('span');
+          folderArrow.className = 'mc-tree-arrow';
+          folderArrow.textContent = '▾';
+          const folderIcon = document.createElement('span');
+          folderIcon.className = 'mc-tree-icon';
+          folderIcon.textContent = '📁';
+          const folderLabel = document.createElement('span');
+          folderLabel.className = 'mc-tree-label';
+          folderLabel.textContent = name;
+          folderButton.append(folderArrow, folderIcon, folderLabel);
+          const nested = document.createElement('div');
+          nested.className = 'mc-tree-nested';
+          folderButton.addEventListener('click', () => {
+            const open = nested.classList.toggle('mc-hidden') === false;
+            folderArrow.textContent = open ? '▾' : '▸';
+          });
+          renderTree(value, nested);
+          folder.append(folderButton, nested);
+          target.append(folder);
+        }
+      }
+      renderTree(folderTree, children);
+      if (!entries.length) {
+        const empty = document.createElement('div');
+        empty.className = 'mc-muted';
+        empty.textContent = 'No files found';
+        children.append(empty);
+      }
+      group.append(parent, children);
+      root.append(group);
     });
+    filesBox.append(root);
+    const first = [...groups.Scripts, ...groups.Styles][0];
+    if (first) {
+      const firstButton = filesBox.querySelector('.mc-tree-child:not(.mc-tree-folder)');
+      if (firstButton) showSource(first, firstButton);
+    } else {
+      sourceView.innerHTML = '<div class="mc-muted">No script or stylesheet elements found.</div>';
+    }
   }
   async function showSource(entry, button) {
     selectedFile = entry;
-    filesBox.querySelectorAll('.mc-file').forEach(b => b.classList.toggle('selected', b === button));
+    filesBox.querySelectorAll('.mc-tree-child').forEach(b => b.classList.toggle('selected', b === button));
     sourceView.replaceChildren();
     const status = document.createElement('div');
     status.className = 'mc-muted';
@@ -207,6 +312,7 @@
   });
   head.addEventListener('pointermove', e => {
     if (!drag) return;
+    panel.style.right = 'auto';
     panel.style.left = Math.max(0, Math.min(innerWidth - panel.offsetWidth, drag.left + e.clientX - drag.x)) + 'px';
     panel.style.top = Math.max(0, Math.min(innerHeight - 100, drag.top + e.clientY - drag.y)) + 'px';
   });
