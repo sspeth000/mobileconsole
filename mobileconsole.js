@@ -53,6 +53,11 @@
     .mc-tree-nested { padding-left:10px; }
     .mc-tree-folder { color:#aebbd0; }
     .mc-source-view { flex:1; min-width:0; overflow:auto; padding:8px; touch-action:pan-y; }
+    .mc-source-toolbar { display:flex; align-items:center; gap:8px; border-bottom:1px solid #353b46; padding:0 0 8px; margin-bottom:8px; }
+    .mc-source-status { flex:1; min-width:0; overflow-wrap:anywhere; color:#aab2c0; font-size:11px; }
+    .mc-download { background:#304766; border-color:#597ba8; white-space:nowrap; }
+    .mc-preview { margin:0; white-space:pre; font:12px/1.5 ui-monospace,monospace; }
+    .mc-file-meta { color:#aab2c0; white-space:pre-wrap; overflow-wrap:anywhere; padding:8px 0; }
     pre { margin:0; white-space:pre; font:12px/1.5 ui-monospace,monospace; }
     .mc-muted { color:#aab2c0; padding:10px; }
     .mc-hidden { display:none !important; }
@@ -146,152 +151,163 @@
   function loadSources() {
     filesBox.dataset.loaded = '1';
     filesBox.replaceChildren();
-    const groups = { Scripts: [], Styles: [] };
-    document.querySelectorAll('script').forEach((el, i) => groups.Scripts.push({
-      label: el.src ? (new URL(el.src, location.href)).pathname.split('/').pop() || el.src : '[inline script ' + (i + 1) + ']',
-      fullLabel: el.src || '[inline script ' + (i + 1) + ']',
-      kind: 'JavaScript', url: el.src || null, text: el.src ? null : el.textContent
+    const groups = new Map();
+    const seen = new Map();
+    const fileName = url => {
+      try { return decodeURIComponent(new URL(url, location.href).pathname.split('/').pop()) || new URL(url).hostname; }
+      catch (_) { return String(url); }
+    };
+    const classify = (url, initiator) => {
+      let path = '';
+      try { path = new URL(url, location.href).pathname.toLowerCase(); } catch (_) {}
+      const ext = (path.match(/\.([a-z0-9]{1,8})$/) || [])[1] || '';
+      if (['js','mjs','cjs'].includes(ext) || initiator === 'script') return 'Scripts';
+      if (ext === 'css') return 'Styles';
+      if (['woff','woff2','ttf','otf','eot'].includes(ext)) return 'Fonts';
+      if (['png','jpg','jpeg','gif','webp','svg','ico','avif','bmp'].includes(ext) || initiator === 'img') return 'Images';
+      if (['mp3','wav','ogg','mp4','webm','mov','m4a'].includes(ext) || ['audio','video'].includes(initiator)) return 'Media';
+      if (['html','htm'].includes(ext) || initiator === 'iframe') return 'Documents';
+      if (['json','xml','wasm','map','txt','pdf','csv'].includes(ext) || ['fetch','xmlhttprequest'].includes(initiator)) return 'Data & Other';
+      return 'Other';
+    };
+    const add = entry => {
+      if (entry.url) {
+        try {
+          const u = new URL(entry.url, location.href);
+          if (!['http:','https:','blob:','data:'].includes(u.protocol)) return;
+          entry.url = u.href;
+          if (seen.has(entry.url)) {
+            const old = seen.get(entry.url);
+            if (!old.text && entry.text) old.text = entry.text;
+            return;
+          }
+          seen.set(entry.url, entry);
+        } catch (_) { return; }
+      }
+      if (!groups.has(entry.kind)) groups.set(entry.kind, []);
+      groups.get(entry.kind).push(entry);
+    };
+
+    document.querySelectorAll('script').forEach((el,i) => add({
+      label:el.src ? fileName(el.src) : '[inline script '+(i+1)+']',
+      fullLabel:el.src || '[inline script '+(i+1)+']', kind:'Scripts',
+      url:el.src || null, text:el.src ? null : el.textContent, mime:'text/javascript', inline:!el.src
     }));
-    document.querySelectorAll('link[rel~="stylesheet"], style').forEach((el, i) => groups.Styles.push({
-      label: el.href ? (new URL(el.href, location.href)).pathname.split('/').pop() || el.href : '[inline style ' + (i + 1) + ']',
-      fullLabel: el.href || '[inline style ' + (i + 1) + ']',
-      kind: 'CSS', url: el.href || null, text: el.href ? null : el.textContent
+    document.querySelectorAll('link[rel~="stylesheet"],style').forEach((el,i) => add({
+      label:el.href ? fileName(el.href) : '[inline style '+(i+1)+']',
+      fullLabel:el.href || '[inline style '+(i+1)+']', kind:'Styles',
+      url:el.href || null, text:el.href ? null : el.textContent, mime:'text/css', inline:!el.href
     }));
+    const resourceSelectors = [
+      ['img[src]','src','Images'],['video[src]','src','Media'],['audio[src]','src','Media'],
+      ['source[src]','src','Media'],['iframe[src]','src','Documents'],['embed[src]','src','Other'],
+      ['object[data]','data','Other'],['track[src]','src','Media'],['input[type="image"][src]','src','Images']
+    ];
+    resourceSelectors.forEach(([sel,attr,kind]) => document.querySelectorAll(sel).forEach(el => {
+      const url=el.getAttribute(attr);
+      if(url) add({label:fileName(url),fullLabel:url,kind,url,text:null,mime:'',inline:false});
+    }));
+    document.querySelectorAll('link[href]').forEach(el => {
+      if ((el.rel||'').toLowerCase().includes('stylesheet')) return;
+      if (el.href) add({label:fileName(el.href),fullLabel:el.href,kind:(el.rel||'').includes('icon')?'Images':'Other',url:el.href,text:null,mime:el.type||'',inline:false});
+    });
+    try {
+      performance.getEntriesByType('resource').forEach(item => {
+        if (!item.name || item.name.startsWith('data:')) return;
+        add({label:fileName(item.name),fullLabel:item.name,kind:classify(item.name,item.initiatorType),url:item.name,text:null,mime:'',inline:false});
+      });
+    } catch (_) {}
 
     const root = document.createElement('div');
-    root.className = 'mc-tree-group';
     const page = document.createElement('div');
-    page.className = 'mc-muted';
-    page.textContent = location.host || 'Current page';
-    root.append(page);
-
+    page.className='mc-muted'; page.textContent=location.host || 'Current page'; root.append(page);
     function makeFile(entry) {
-      const b = document.createElement('button');
-      b.className = 'mc-tree-child';
-      b.title = entry.fullLabel;
-      const ico = document.createElement('span');
-      ico.className = 'mc-tree-icon';
-      ico.textContent = entry.kind === 'CSS' ? '◇' : 'JS';
-      const label = document.createElement('span');
-      label.className = 'mc-tree-label';
-      label.textContent = entry.label;
-      b.append(ico, label);
-      b.addEventListener('click', () => showSource(entry, b));
-      return b;
+      const b=document.createElement('button'); b.className='mc-tree-child'; b.title=entry.fullLabel;
+      const ico=document.createElement('span'); ico.className='mc-tree-icon';
+      ico.textContent=entry.kind==='Styles'?'◇':entry.kind==='Images'?'▧':entry.kind==='Media'?'♫':entry.kind==='Fonts'?'F':entry.kind==='Scripts'?'JS':'·';
+      const label=document.createElement('span'); label.className='mc-tree-label'; label.textContent=entry.label;
+      b.append(ico,label); b.addEventListener('click',()=>showSource(entry,b)); return b;
     }
-    Object.entries(groups).forEach(([groupName, entries]) => {
-      const group = document.createElement('section');
-      group.className = 'mc-tree-group';
-      const parent = document.createElement('button');
-      parent.className = 'mc-tree-parent';
-      const arrow = document.createElement('span');
-      arrow.className = 'mc-tree-arrow';
-      arrow.textContent = entries.length ? '▾' : '▸';
-      const icon = document.createElement('span');
-      icon.className = 'mc-tree-icon';
-      icon.textContent = groupName === 'Scripts' ? '▣' : '▤';
-      const label = document.createElement('span');
-      label.className = 'mc-tree-label';
-      label.textContent = groupName + ' (' + entries.length + ')';
-      parent.append(arrow, icon, label);
-      const children = document.createElement('div');
-      children.className = 'mc-tree-nested';
-      parent.addEventListener('click', () => {
-        const open = children.classList.toggle('mc-hidden') === false;
-        arrow.textContent = open ? '▾' : '▸';
+    const order=['Documents','Scripts','Styles','Images','Media','Fonts','Data & Other','Other'];
+    [...groups.keys()].sort((a,b)=>order.indexOf(a)-order.indexOf(b)).forEach(name => {
+      const entries=groups.get(name), group=document.createElement('section');
+      const parent=document.createElement('button'); parent.className='mc-tree-parent';
+      const arrow=document.createElement('span'); arrow.className='mc-tree-arrow'; arrow.textContent='▾';
+      const icon=document.createElement('span'); icon.className='mc-tree-icon'; icon.textContent='▣';
+      const label=document.createElement('span'); label.className='mc-tree-label'; label.textContent=name+' ('+entries.length+')';
+      parent.append(arrow,icon,label);
+      const children=document.createElement('div'); children.className='mc-tree-nested';
+      parent.addEventListener('click',()=>{const open=children.classList.toggle('mc-hidden')===false;arrow.textContent=open?'▾':'▸';});
+      const tree=new Map();
+      entries.forEach(entry=>{
+        let parts=[];
+        if(entry.url) try{parts=new URL(entry.url,location.href).pathname.split('/').filter(Boolean).slice(0,-1);}catch(_){}
+        let node=tree; parts.forEach(part=>{if(!node.has(part))node.set(part,new Map());node=node.get(part);});
+        if(!node.has('__files__'))node.set('__files__',[]);node.get('__files__').push(entry);
       });
-
-      const folderTree = new Map();
-      entries.forEach(entry => {
-        let segments = [];
-        if (entry.url) {
-          try { segments = new URL(entry.url, location.href).pathname.split('/').filter(Boolean).slice(0, -1); } catch (_) {}
-        }
-        let current = folderTree;
-        segments.forEach(segment => {
-          if (!current.has(segment)) current.set(segment, new Map());
-          current = current.get(segment);
-        });
-        if (!current.has('__files__')) current.set('__files__', []);
-        current.get('__files__').push(entry);
-      });
-      function renderTree(map, target) {
-        for (const [name, value] of map) {
-          if (name === '__files__') {
-            value.forEach(entry => target.append(makeFile(entry)));
-            continue;
-          }
-          const folder = document.createElement('div');
-          const folderButton = document.createElement('button');
-          folderButton.className = 'mc-tree-child mc-tree-folder';
-          const folderArrow = document.createElement('span');
-          folderArrow.className = 'mc-tree-arrow';
-          folderArrow.textContent = '▾';
-          const folderIcon = document.createElement('span');
-          folderIcon.className = 'mc-tree-icon';
-          folderIcon.textContent = '📁';
-          const folderLabel = document.createElement('span');
-          folderLabel.className = 'mc-tree-label';
-          folderLabel.textContent = name;
-          folderButton.append(folderArrow, folderIcon, folderLabel);
-          const nested = document.createElement('div');
-          nested.className = 'mc-tree-nested';
-          folderButton.addEventListener('click', () => {
-            const open = nested.classList.toggle('mc-hidden') === false;
-            folderArrow.textContent = open ? '▾' : '▸';
-          });
-          renderTree(value, nested);
-          folder.append(folderButton, nested);
-          target.append(folder);
+      function render(map,target){
+        for(const [key,val] of map){
+          if(key==='__files__'){val.forEach(entry=>target.append(makeFile(entry)));continue;}
+          const wrap=document.createElement('div'), b=document.createElement('button'); b.className='mc-tree-child mc-tree-folder';
+          const ar=document.createElement('span'); ar.className='mc-tree-arrow'; ar.textContent='▾';
+          const ic=document.createElement('span'); ic.className='mc-tree-icon'; ic.textContent='📁';
+          const tx=document.createElement('span'); tx.className='mc-tree-label'; tx.textContent=key;
+          b.append(ar,ic,tx); const nested=document.createElement('div');nested.className='mc-tree-nested';
+          b.addEventListener('click',()=>{const open=nested.classList.toggle('mc-hidden')===false;ar.textContent=open?'▾':'▸';});
+          render(val,nested);wrap.append(b,nested);target.append(wrap);
         }
       }
-      renderTree(folderTree, children);
-      if (!entries.length) {
-        const empty = document.createElement('div');
-        empty.className = 'mc-muted';
-        empty.textContent = 'No files found';
-        children.append(empty);
-      }
-      group.append(parent, children);
-      root.append(group);
+      render(tree,children);group.append(parent,children);root.append(group);
     });
+    if(!groups.size){const empty=document.createElement('div');empty.className='mc-muted';empty.textContent='No page resources detected yet.';root.append(empty);}
     filesBox.append(root);
-    const first = [...groups.Scripts, ...groups.Styles][0];
-    if (first) {
-      const firstButton = filesBox.querySelector('.mc-tree-child:not(.mc-tree-folder)');
-      if (firstButton) showSource(first, firstButton);
-    } else {
-      sourceView.innerHTML = '<div class="mc-muted">No script or stylesheet elements found.</div>';
-    }
-  }
-  async function showSource(entry, button) {
-    selectedFile = entry;
-    filesBox.querySelectorAll('.mc-tree-child').forEach(b => b.classList.toggle('selected', b === button));
-    sourceView.replaceChildren();
-    const status = document.createElement('div');
-    status.className = 'mc-muted';
-    status.textContent = entry.url ? 'Loading source…' : entry.kind + ' · inline';
-    sourceView.append(status);
-    let text = entry.text || '';
-    if (entry.url) {
-      try {
-        const response = await fetch(entry.url, { credentials: 'same-origin' });
-        if (!response.ok) throw new Error('HTTP ' + response.status);
-        text = await response.text();
-      } catch (e) {
-        status.textContent = 'Could not fetch this file (often blocked by cross-origin restrictions). Open source: ' + entry.url;
-        const link = document.createElement('a');
-        link.href = entry.url; link.target = '_blank'; link.rel = 'noopener'; link.textContent = 'Open source in new tab';
-        link.style.color = '#8ab4f8'; sourceView.append(link);
-        return;
-      }
-    }
-    status.textContent = entry.kind + ' · ' + text.length.toLocaleString() + ' characters';
-    const pre = document.createElement('pre');
-    pre.textContent = text || '(empty source)';
-    sourceView.replaceChildren(status, pre);
+    const first=(groups.get('Scripts')||groups.values().next().value||[])[0];
+    if(first){const b=[...filesBox.querySelectorAll('.mc-tree-child')].find(x=>x.title===first.fullLabel);if(b)showSource(first,b);}
+    else sourceView.innerHTML='<div class="mc-muted">Select a resource to inspect or download it.</div>';
   }
 
+  function downloadEntry(entry, blob) {
+    let filename='download';
+    if(entry.url) try{filename=decodeURIComponent(new URL(entry.url,location.href).pathname.split('/').pop())||filename;}catch(_){}
+    else filename=entry.kind==='Styles'?'inline.css':entry.kind==='Scripts'?'inline.js':'inline-resource.txt';
+    const link=document.createElement('a');let objectUrl=null;
+    if(blob){objectUrl=URL.createObjectURL(blob);link.href=objectUrl;}else link.href=entry.url;
+    link.download=filename;link.rel='noopener';link.style.display='none';shadow.append(link);link.click();link.remove();
+    if(objectUrl)setTimeout(()=>URL.revokeObjectURL(objectUrl),30000);
+  }
+
+  async function showSource(entry, button) {
+    selectedFile=entry;
+    filesBox.querySelectorAll('.mc-tree-child').forEach(b=>b.classList.toggle('selected',b===button));
+    sourceView.replaceChildren();
+    const toolbar=document.createElement('div');toolbar.className='mc-source-toolbar';
+    const status=document.createElement('div');status.className='mc-source-status';status.textContent=entry.inline?'Inline '+entry.kind:entry.url;
+    const download=document.createElement('button');download.className='mc-download';download.textContent='↓ Download';
+    toolbar.append(status,download);
+    const meta=document.createElement('div');meta.className='mc-file-meta';meta.textContent='Loading resource…';sourceView.append(toolbar,meta);
+    let blob=null,text=null;
+    if(entry.inline){text=entry.text||'';blob=new Blob([text],{type:entry.mime||'text/plain'});}
+    else if(entry.url){
+      try{
+        const response=await fetch(entry.url,{credentials:'same-origin'});
+        if(!response.ok)throw new Error('HTTP '+response.status);
+        blob=await response.blob();
+        const mime=(response.headers.get('content-type')||blob.type||'').toLowerCase();
+        const textual=/^(text\/|application\/(javascript|json|xml|x-javascript))/.test(mime)||/\.(js|mjs|cjs|css|html?|json|xml|txt|md|csv|svg|map)(?:$|\?)/i.test(entry.url);
+        if(textual)text=await blob.text();
+        status.textContent=(mime||'Unknown type')+' · '+blob.size.toLocaleString()+' bytes';
+      }catch(_){
+        status.textContent='Fetch blocked (often CORS). Try opening the URL directly.';
+        meta.textContent=entry.url;
+        download.addEventListener('click',()=>downloadEntry(entry,null));
+        const open=document.createElement('a');open.href=entry.url;open.target='_blank';open.rel='noopener';open.textContent='Open resource';
+        open.style.color='#8ab4f8';meta.append(document.createElement('br'),open);return;
+      }
+    }
+    download.addEventListener('click',()=>downloadEntry(entry,blob));
+    if(text!==null){const pre=document.createElement('pre');pre.className='mc-preview';pre.textContent=text||'(empty file)';sourceView.append(pre);}
+    else meta.textContent='Binary or non-text resource · '+(blob?blob.size.toLocaleString()+' bytes':'size unavailable')+'. Use Download to save a copy.';
+  }
   function close() {
     ['log','info','warn','error','debug'].forEach(m => { if (originals[m]) window.console[m] = originals[m]; });
     window.removeEventListener('error', onError);
